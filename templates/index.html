@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Sudoku Solver</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Sudoku Solver AI</h1>
+        <div class="upload-box">
+            <input type="file" id="sudokuImage" accept="image/*" capture="camera">
+            <label for="sudokuImage">Choose or Capture Image</label>
+            <div id="previewContainer">
+                <img id="preview" style="display:none;">
+                <div id="placeholder">Preview will appear here</div>
+            </div>
+            <button id="solveBtn">Solve Sudoku</button>
+        </div>
+        
+        <div class="results" id="results" style="display:none;">
+            <h2>Solution</h2>
+            <div id="solutionGrid"></div>
+        </div>
+    </div>
+    <script src="/static/script.js"></script>
+</body>
+</html>
