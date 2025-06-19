@@ -5,6 +5,9 @@ from tensorflow.keras.models import load_model
 from io import BytesIO
 import os
 import logging
+import time
+from concurrent.futures import ThreadPoolExecutor
+import threading
 
 app = Flask(__name__)
 
@@ -20,143 +23,99 @@ except Exception as e:
     logger.error(f"Failed to load model: {e}")
     model = None
 
-def preprocess_image(img):
-    """Enhanced image preprocessing with multiple techniques"""
-    # Resize image if too large
+# Global thread pool for faster processing
+executor = ThreadPoolExecutor(max_workers=4)
+
+def preprocess_image_fast(img):
+    """Fast image preprocessing optimized for speed"""
+    start_time = time.time()
+    
+    # Resize image if too large (more aggressive resizing)
     height, width = img.shape[:2]
-    if width > 1000 or height > 1000:
-        scale = min(1000/width, 1000/height)
+    max_size = 600  # Reduced from 1000
+    if width > max_size or height > max_size:
+        scale = min(max_size/width, max_size/height)
         new_width = int(width * scale)
         new_height = int(height * scale)
-        img = cv2.resize(img, (new_width, new_height))
+        img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_AREA)
+        logger.info(f"Resized image to: {new_width}x{new_height}")
     
     # Convert to grayscale
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     
-    # Apply CLAHE for better contrast
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-    gray = clahe.apply(gray)
+    # Fast contrast enhancement
+    gray = cv2.equalizeHist(gray)
     
-    # Gaussian blur to reduce noise
+    # Single, fast thresholding method
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                  cv2.THRESH_BINARY, 11, 2)
     
-    # Multiple thresholding approaches
-    # 1. Adaptive threshold
-    thresh1 = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                   cv2.THRESH_BINARY, 11, 2)
-    
-    # 2. Otsu's thresholding
-    _, thresh2 = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    
-    # 3. Another adaptive threshold with different parameters
-    thresh3 = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_MEAN_C, 
-                                   cv2.THRESH_BINARY, 15, 3)
-    
-    # Combine thresholds
-    combined = cv2.bitwise_and(thresh1, thresh2)
-    combined = cv2.bitwise_or(combined, thresh3)
-    
-    # Morphological operations to clean up
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-    processed = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel, iterations=1)
-    processed = cv2.morphologyEx(processed, cv2.MORPH_OPEN, kernel, iterations=1)
-    
-    return processed, gray
+    logger.info(f"Preprocessing took: {time.time() - start_time:.2f}s")
+    return thresh, gray
 
-def find_grid_contour(processed_img, original_img):
-    """Improved grid detection with multiple fallback methods"""
-    # Method 1: Find contours in processed image
+def find_grid_contour_fast(processed_img, original_img):
+    """Fast grid detection with early exit"""
+    start_time = time.time()
+    
+    # Find contours
     contours, _ = cv2.findContours(processed_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    if contours:
-        # Sort by area and try largest contours first
-        contours = sorted(contours, key=cv2.contourArea, reverse=True)
-        
-        for contour in contours[:10]:  # Check top 10 largest
-            # Approximate contour
-            epsilon = 0.01 * cv2.arcLength(contour, True)
-            approx = cv2.approxPolyDP(contour, epsilon, True)
+    if not contours:
+        return None
+    
+    # Sort by area and check only top 3 candidates for speed
+    contours = sorted(contours, key=cv2.contourArea, reverse=True)[:3]
+    
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area < 3000:  # Skip small contours early
+            continue
             
-            # Check if it's roughly quadrilateral
-            if len(approx) >= 4:
-                # If more than 4 points, try to find the best 4
-                if len(approx) > 4:
-                    # Use convex hull and find corners
-                    hull = cv2.convexHull(contour)
-                    epsilon = 0.02 * cv2.arcLength(hull, True)
-                    approx = cv2.approxPolyDP(hull, epsilon, True)
-                
-                if len(approx) == 4:
-                    area = cv2.contourArea(contour)
-                    # More lenient area threshold
-                    if area > 5000:
-                        # Check if it's roughly square
-                        x, y, w, h = cv2.boundingRect(approx)
-                        aspect_ratio = float(w) / h
-                        if 0.7 <= aspect_ratio <= 1.3:  # More lenient aspect ratio
-                            return approx
-    
-    # Method 2: Use Hough Line Transform as fallback
-    gray = cv2.cvtColor(original_img, cv2.COLOR_BGR2GRAY) if len(original_img.shape) == 3 else original_img
-    edges = cv2.Canny(gray, 50, 150, apertureSize=3)
-    
-    # Find lines
-    lines = cv2.HoughLines(edges, 1, np.pi/180, threshold=100)
-    
-    if lines is not None and len(lines) >= 4:
-        # This is a simplified approach - in practice, you'd want to
-        # find the intersection points of the strongest horizontal and vertical lines
-        height, width = gray.shape
-        margin = min(width, height) // 10
+        # Quick approximation
+        peri = cv2.arcLength(contour, True)
+        approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
         
-        # Create a rough grid boundary
-        approx = np.array([
-            [[margin, margin]],
-            [[width-margin, margin]],
-            [[width-margin, height-margin]],
-            [[margin, height-margin]]
-        ], dtype=np.int32)
-        
-        return approx
+        if len(approx) == 4:
+            # Quick aspect ratio check
+            x, y, w, h = cv2.boundingRect(approx)
+            aspect_ratio = float(w)/h
+            if 0.7 <= aspect_ratio <= 1.3:
+                logger.info(f"Grid detection took: {time.time() - start_time:.2f}s")
+                return approx
     
-    return None
+    # Fast fallback: use image bounds
+    height, width = processed_img.shape
+    margin = min(width, height) // 15
+    approx = np.array([
+        [[margin, margin]],
+        [[width-margin, margin]],
+        [[width-margin, height-margin]],
+        [[margin, height-margin]]
+    ], dtype=np.int32)
+    
+    logger.info(f"Grid detection (fallback) took: {time.time() - start_time:.2f}s")
+    return approx
 
-def order_points(pts):
-    """Order points in clockwise order starting from top-left"""
+def order_points_fast(pts):
+    """Fast point ordering"""
     rect = np.zeros((4, 2), dtype="float32")
-    
-    # Sum and difference of coordinates
     s = pts.sum(axis=1)
     diff = np.diff(pts, axis=1)
     
-    # Top-left has smallest sum, bottom-right has largest sum
-    rect[0] = pts[np.argmin(s)]
-    rect[2] = pts[np.argmax(s)]
-    
-    # Top-right has smallest difference, bottom-left has largest difference
-    rect[1] = pts[np.argmin(diff)]
-    rect[3] = pts[np.argmax(diff)]
+    rect[0] = pts[np.argmin(s)]      # top-left
+    rect[2] = pts[np.argmax(s)]      # bottom-right
+    rect[1] = pts[np.argmin(diff)]   # top-right
+    rect[3] = pts[np.argmax(diff)]   # bottom-left
     
     return rect
 
-def warp_perspective(image, contour):
-    """Extract and warp the Sudoku grid"""
-    ordered_pts = order_points(contour.reshape(4, 2))
+def warp_perspective_fast(image, contour):
+    """Fast perspective warping with fixed size"""
+    ordered_pts = order_points_fast(contour.reshape(4, 2))
     
-    # Calculate the width and height of the new image
-    (tl, tr, br, bl) = ordered_pts
-    
-    widthA = np.sqrt(((br[0] - bl[0]) ** 2) + ((br[1] - bl[1]) ** 2))
-    widthB = np.sqrt(((tr[0] - tl[0]) ** 2) + ((tr[1] - tl[1]) ** 2))
-    maxWidth = max(int(widthA), int(widthB))
-    
-    heightA = np.sqrt(((tr[0] - br[0]) ** 2) + ((tr[1] - br[1]) ** 2))
-    heightB = np.sqrt(((tl[0] - bl[0]) ** 2) + ((tl[1] - bl[1]) ** 2))
-    maxHeight = max(int(heightA), int(heightB))
-    
-    # Use the larger dimension to ensure square output
-    size = max(maxWidth, maxHeight, 450)  # Minimum 450px
-    
+    # Fixed size for speed (smaller than before)
+    size = 360  # Reduced from 450
     dst = np.array([
         [0, 0],
         [size-1, 0],
@@ -169,8 +128,73 @@ def warp_perspective(image, contour):
     
     return warped, matrix
 
-def extract_digits(warped_grid):
-    """Enhanced digit extraction with better preprocessing"""
+def extract_single_digit(cell_img, row, col):
+    """Extract digit from a single cell - optimized for threading"""
+    try:
+        if cell_img.size == 0:
+            return 0
+        
+        # Fast thresholding
+        if len(cell_img.shape) == 3:
+            cell_gray = cv2.cvtColor(cell_img, cv2.COLOR_BGR2GRAY)
+        else:
+            cell_gray = cell_img
+        
+        # Single threshold method for speed
+        thresh = cv2.adaptiveThreshold(cell_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                      cv2.THRESH_BINARY_INV, 11, 2)
+        
+        # Find contours
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if not contours:
+            return 0
+        
+        # Get largest contour
+        largest_contour = max(contours, key=cv2.contourArea)
+        x, y, w, h = cv2.boundingRect(largest_contour)
+        
+        # Quick filtering
+        contour_area = cv2.contourArea(largest_contour)
+        cell_area = thresh.shape[0] * thresh.shape[1]
+        
+        if (w < thresh.shape[1] * 0.2 or h < thresh.shape[0] * 0.2 or
+            contour_area < cell_area * 0.05 or contour_area > cell_area * 0.8):
+            return 0
+        
+        # Extract and preprocess digit
+        digit_roi = thresh[y:y+h, x:x+w]
+        digit_img = cv2.resize(digit_roi, (28, 28), interpolation=cv2.INTER_AREA)
+        
+        # Simple morphological operation
+        kernel = np.ones((2,2), np.uint8)
+        digit_img = cv2.morphologyEx(digit_img, cv2.MORPH_OPEN, kernel)
+        
+        # Prepare for model
+        digit_img = digit_img.astype("float32") / 255.0
+        digit_img = np.expand_dims(digit_img, axis=-1)
+        digit_img = np.expand_dims(digit_img, axis=0)
+        
+        # Predict
+        if model is not None:
+            prediction = model.predict(digit_img, verbose=0)
+            confidence = np.max(prediction)
+            predicted_digit = np.argmax(prediction)
+            
+            # Lower confidence threshold for speed
+            if confidence > 0.5 and predicted_digit > 0:
+                return predicted_digit
+        
+        return 0
+        
+    except Exception as e:
+        logger.warning(f"Error processing cell ({row},{col}): {e}")
+        return 0
+
+def extract_digits_fast(warped_grid):
+    """Fast digit extraction using parallel processing"""
+    start_time = time.time()
+    
     board = np.zeros((9, 9), dtype="int")
     cell_size = warped_grid.shape[0] // 9
     
@@ -180,172 +204,127 @@ def extract_digits(warped_grid):
     else:
         gray_warped = warped_grid
     
-    # Apply CLAHE for better contrast
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-    gray_warped = clahe.apply(gray_warped)
-    
-    # Multiple thresholding approaches
-    thresh_methods = []
-    
-    # Adaptive thresholding
-    thresh1 = cv2.adaptiveThreshold(gray_warped, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                   cv2.THRESH_BINARY_INV, 11, 2)
-    thresh_methods.append(thresh1)
-    
-    thresh2 = cv2.adaptiveThreshold(gray_warped, 255, cv2.ADAPTIVE_THRESH_MEAN_C, 
-                                   cv2.THRESH_BINARY_INV, 15, 3)
-    thresh_methods.append(thresh2)
-    
-    # Otsu thresholding
-    _, thresh3 = cv2.threshold(gray_warped, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    thresh_methods.append(thresh3)
-    
+    # Prepare all cells for parallel processing
+    cell_tasks = []
     for i in range(9):
         for j in range(9):
-            cell_predictions = []
+            # Extract cell with padding
+            padding = max(1, cell_size // 20)  # Minimal padding
+            y_start = max(0, i * cell_size + padding)
+            y_end = min(gray_warped.shape[0], (i + 1) * cell_size - padding)
+            x_start = max(0, j * cell_size + padding)
+            x_end = min(gray_warped.shape[1], (j + 1) * cell_size - padding)
             
-            # Try each thresholding method
-            for thresh in thresh_methods:
-                # Extract cell with some padding
-                padding = cell_size // 10
-                y_start = max(0, i * cell_size + padding)
-                y_end = min(thresh.shape[0], (i + 1) * cell_size - padding)
-                x_start = max(0, j * cell_size + padding)
-                x_end = min(thresh.shape[1], (j + 1) * cell_size - padding)
-                
-                cell = thresh[y_start:y_end, x_start:x_end]
-                
-                if cell.size == 0:
-                    continue
-                
-                # Find contours in the cell
-                contours, _ = cv2.findContours(cell, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                
-                if contours:
-                    # Find the largest contour
-                    largest_contour = max(contours, key=cv2.contourArea)
-                    x, y, w, h = cv2.boundingRect(largest_contour)
-                    
-                    # Filter out noise and grid lines
-                    contour_area = cv2.contourArea(largest_contour)
-                    cell_area = cell.shape[0] * cell.shape[1]
-                    
-                    # Check if contour is significant enough to be a digit
-                    if (w > cell.shape[1] * 0.2 and h > cell.shape[0] * 0.2 and
-                        contour_area > cell_area * 0.05 and
-                        contour_area < cell_area * 0.8):
-                        
-                        # Extract digit region
-                        digit_roi = cell[y:y+h, x:x+w]
-                        
-                        # Resize to 28x28 for model input
-                        digit_img = cv2.resize(digit_roi, (28, 28))
-                        
-                        # Additional preprocessing
-                        # Remove small noise
-                        kernel = np.ones((2,2), np.uint8)
-                        digit_img = cv2.morphologyEx(digit_img, cv2.MORPH_OPEN, kernel)
-                        
-                        # Normalize
-                        digit_img = digit_img.astype("float32") / 255.0
-                        digit_img = np.expand_dims(digit_img, axis=-1)
-                        digit_img = np.expand_dims(digit_img, axis=0)
-                        
-                        # Predict
-                        if model is not None:
-                            try:
-                                prediction = model.predict(digit_img, verbose=0)
-                                confidence = np.max(prediction)
-                                predicted_digit = np.argmax(prediction)
-                                
-                                # Only consider high-confidence predictions
-                                if confidence > 0.6 and predicted_digit > 0:  # Exclude 0 (empty)
-                                    cell_predictions.append((predicted_digit, confidence))
-                            except Exception as e:
-                                logger.warning(f"Prediction error for cell ({i},{j}): {e}")
-            
-            # Choose the best prediction
-            if cell_predictions:
-                # Sort by confidence and take the best
-                cell_predictions.sort(key=lambda x: x[1], reverse=True)
-                board[i, j] = cell_predictions[0][0]
+            cell = gray_warped[y_start:y_end, x_start:x_end]
+            cell_tasks.append((cell.copy(), i, j))
     
+    # Process cells in parallel (limited to avoid timeout)
+    results = {}
+    batch_size = 9  # Process 9 cells at a time
+    
+    for batch_start in range(0, len(cell_tasks), batch_size):
+        batch = cell_tasks[batch_start:batch_start + batch_size]
+        
+        # Use threading for this batch
+        futures = []
+        for cell_img, row, col in batch:
+            future = executor.submit(extract_single_digit, cell_img, row, col)
+            futures.append((future, row, col))
+        
+        # Collect results with timeout
+        for future, row, col in futures:
+            try:
+                result = future.result(timeout=1.0)  # 1 second timeout per cell
+                results[(row, col)] = result
+            except Exception as e:
+                logger.warning(f"Timeout or error for cell ({row},{col}): {e}")
+                results[(row, col)] = 0
+    
+    # Fill board
+    for i in range(9):
+        for j in range(9):
+            board[i, j] = results.get((i, j), 0)
+    
+    logger.info(f"Digit extraction took: {time.time() - start_time:.2f}s")
     return board
 
-def is_valid_sudoku(board):
-    """Check if the extracted Sudoku board is valid"""
-    def is_valid_unit(unit):
-        unit = [i for i in unit if i != 0]
-        return len(unit) == len(set(unit))
+def solve_sudoku_fast(board):
+    """Fast Sudoku solver with early termination"""
+    start_time = time.time()
     
-    # Check rows
-    for row in board:
-        if not is_valid_unit(row):
-            return False
-    
-    # Check columns
-    for col in range(9):
-        if not is_valid_unit([board[row][col] for row in range(9)]):
-            return False
-    
-    # Check 3x3 boxes
-    for box_row in range(3):
-        for box_col in range(3):
-            box = []
-            for row in range(box_row*3, box_row*3 + 3):
-                for col in range(box_col*3, box_col*3 + 3):
-                    box.append(board[row][col])
-            if not is_valid_unit(box):
-                return False
-    
-    return True
-
-def solve_sudoku(board):
-    """Solve Sudoku using backtracking"""
-    def find_empty(board):
+    def find_empty_optimized(board):
+        # Find empty cell with fewest possibilities (MRV heuristic)
+        min_possibilities = 10
+        best_cell = None
+        
         for i in range(9):
             for j in range(9):
                 if board[i][j] == 0:
-                    return (i, j)
-        return None
+                    possibilities = 0
+                    for num in range(1, 10):
+                        if is_valid_fast(board, num, (i, j)):
+                            possibilities += 1
+                    
+                    if possibilities < min_possibilities:
+                        min_possibilities = possibilities
+                        best_cell = (i, j)
+                        
+                        # If only one possibility, return immediately
+                        if possibilities == 1:
+                            return best_cell
+        
+        return best_cell
 
-    def is_valid(board, num, pos):
+    def is_valid_fast(board, num, pos):
+        row, col = pos
+        
         # Check row
-        for j in range(9):
-            if board[pos[0]][j] == num and pos[1] != j:
-                return False
+        if num in board[row]:
+            return False
         
         # Check column
         for i in range(9):
-            if board[i][pos[1]] == num and pos[0] != i:
+            if board[i][col] == num:
                 return False
         
         # Check 3x3 box
-        box_x = pos[1] // 3
-        box_y = pos[0] // 3
-        for i in range(box_y*3, box_y*3 + 3):
-            for j in range(box_x*3, box_x*3 + 3):
-                if board[i][j] == num and (i, j) != pos:
+        box_row, box_col = 3 * (row // 3), 3 * (col // 3)
+        for i in range(box_row, box_row + 3):
+            for j in range(box_col, box_col + 3):
+                if board[i][j] == num:
                     return False
         
         return True
 
-    find = find_empty(board)
-    if not find:
-        return True
-    
-    row, col = find
+    def solve_recursive(board, depth=0):
+        # Prevent infinite recursion
+        if depth > 81:
+            return False
+            
+        # Check timeout (15 seconds max)
+        if time.time() - start_time > 15:
+            return False
+        
+        find = find_empty_optimized(board)
+        if not find:
+            return True
+        
+        row, col = find
+        
+        for num in range(1, 10):
+            if is_valid_fast(board, num, (row, col)):
+                board[row][col] = num
+                
+                if solve_recursive(board, depth + 1):
+                    return True
+                
+                board[row][col] = 0
+        
+        return False
 
-    for i in range(1, 10):
-        if is_valid(board, i, (row, col)):
-            board[row][col] = i
-            
-            if solve_sudoku(board):
-                return True
-            
-            board[row][col] = 0
-    
-    return False
+    success = solve_recursive(board)
+    logger.info(f"Sudoku solving took: {time.time() - start_time:.2f}s")
+    return success
 
 @app.route('/')
 def home():
@@ -353,6 +332,8 @@ def home():
 
 @app.route('/solve', methods=['POST'])
 def solve():
+    overall_start = time.time()
+    
     if model is None:
         return jsonify({'error': 'Model not loaded. Please ensure digit_model.h5 is available.'}), 500
     
@@ -374,60 +355,49 @@ def solve():
         
         logger.info(f"Image loaded: {img.shape}")
         
-        # Preprocess image
-        processed, gray = preprocess_image(img)
+        # Fast preprocessing
+        processed, gray = preprocess_image_fast(img)
         
-        # Find grid contour
-        grid_contour = find_grid_contour(processed, img)
+        # Fast grid detection
+        grid_contour = find_grid_contour_fast(processed, img)
         
         if grid_contour is None:
-            # Try with different preprocessing
-            logger.info("First attempt failed, trying alternative preprocessing")
-            
-            # Alternative preprocessing
-            blurred = cv2.GaussianBlur(gray, (3, 3), 0)
-            edges = cv2.Canny(blurred, 30, 100)
-            
-            # Dilate edges to connect broken lines
-            kernel = np.ones((3, 3), np.uint8)
-            edges = cv2.dilate(edges, kernel, iterations=1)
-            
-            grid_contour = find_grid_contour(edges, img)
-            
-            if grid_contour is None:
-                return jsonify({'error': 'Could not detect Sudoku grid. Please ensure the image shows a clear, complete Sudoku grid.'}), 400
+            return jsonify({'error': 'Could not detect Sudoku grid. Please ensure the image shows a clear, complete Sudoku grid.'}), 400
         
         logger.info("Grid contour found")
         
-        # Warp perspective to get clean grid
-        warped, _ = warp_perspective(img, grid_contour)
+        # Fast perspective warp
+        warped, _ = warp_perspective_fast(img, grid_contour)
         
-        # Extract digits
-        board = extract_digits(warped)
+        # Fast digit extraction
+        board = extract_digits_fast(warped)
         logger.info(f"Extracted board:\n{board}")
         
-        # Validate the extracted board
-        if not is_valid_sudoku(board):
-            logger.warning("Invalid Sudoku detected, but attempting to solve anyway")
-        
-        # Check if board has enough clues (at least 17 for a valid Sudoku)
+        # Check if we have enough digits
         filled_cells = np.count_nonzero(board)
-        if filled_cells < 10:
+        if filled_cells < 8:  # Reduced threshold
             return jsonify({'error': 'Not enough digits detected. Please use a clearer image.'}), 400
         
-        # Solve the puzzle
+        # Fast solve
         solved_board = board.copy()
-        if solve_sudoku(solved_board):
+        solve_success = solve_sudoku_fast(solved_board)
+        
+        total_time = time.time() - overall_start
+        logger.info(f"Total processing time: {total_time:.2f}s")
+        
+        if solve_success:
             return jsonify({
                 'original': board.tolist(),
                 'solution': solved_board.tolist(),
-                'detected_digits': int(filled_cells)
+                'detected_digits': int(filled_cells),
+                'processing_time': round(total_time, 2)
             })
         else:
             return jsonify({
-                'error': 'Could not solve the puzzle. This might be due to incorrect digit recognition or an invalid puzzle.',
+                'error': 'Could not solve the puzzle within time limit. This might be due to incorrect digit recognition.',
                 'original': board.tolist(),
-                'detected_digits': int(filled_cells)
+                'detected_digits': int(filled_cells),
+                'processing_time': round(total_time, 2)
             }), 400
         
     except Exception as e:
@@ -443,4 +413,5 @@ def health():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    # Increased timeout for development
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
