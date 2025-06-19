@@ -1,27 +1,551 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sudoku Solver</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+        }
+
+        h1 {
+            text-align: center;
+            color: #4a5568;
+            margin-bottom: 30px;
+            font-size: 2.5em;
+        }
+
+        .upload-section {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .file-input-wrapper {
+            position: relative;
+            display: inline-block;
+            cursor: pointer;
+            background: linear-gradient(45deg, #667eea, #764ba2);
+            color: white;
+            padding: 15px 30px;
+            border-radius: 25px;
+            font-size: 16px;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .file-input-wrapper:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+        }
+
+        .file-input-wrapper input[type=file] {
+            position: absolute;
+            left: -9999px;
+        }
+
+        .solve-btn {
+            background: linear-gradient(45deg, #48bb78, #38a169);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 25px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-left: 10px;
+            box-shadow: 0 4px 15px rgba(72, 187, 120, 0.4);
+        }
+
+        .solve-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(72, 187, 120, 0.6);
+        }
+
+        .solve-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .preview-container {
+            text-align: center;
+            margin: 20px 0;
+        }
+
+        .preview-image {
+            max-width: 100%;
+            max-height: 400px;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+
+        .results {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-top: 30px;
+        }
+
+        @media (max-width: 768px) {
+            .results {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .sudoku-grid {
+            display: grid;
+            grid-template-columns: repeat(9, 1fr);
+            gap: 2px;
+            background: #2d3748;
+            border: 3px solid #2d3748;
+            border-radius: 10px;
+            padding: 5px;
+            max-width: 400px;
+            margin: 0 auto;
+        }
+
+        .sudoku-cell {
+            background: white;
+            aspect-ratio: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            font-weight: bold;
+            border-radius: 3px;
+        }
+
+        .sudoku-cell.original {
+            background: #e2e8f0;
+            color: #2d3748;
+        }
+
+        .sudoku-cell.solved {
+            background: #c6f6d5;
+            color: #22543d;
+        }
+
+        .sudoku-cell.empty {
+            background: #fed7d7;
+            color: #c53030;
+        }
+
+        .grid-title {
+            text-align: center;
+            font-size: 1.2em;
+            font-weight: bold;
+            margin-bottom: 15px;
+            color: #4a5568;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 20px;
+            font-size: 18px;
+            color: #667eea;
+        }
+
+        .error {
+            background: #fed7d7;
+            color: #c53030;
+            padding: 15px;
+            border-radius: 10px;
+            margin: 20px 0;
+            border-left: 4px solid #e53e3e;
+        }
+
+        .success {
+            background: #c6f6d5;
+            color: #22543d;
+            padding: 15px;
+            border-radius: 10px;
+            margin: 20px 0;
+            border-left: 4px solid #38a169;
+        }
+
+        .info {
+            background: #bee3f8;
+            color: #2c5282;
+            padding: 15px;
+            border-radius: 10px;
+            margin: 20px 0;
+            border-left: 4px solid #3182ce;
+        }
+
+        .stats {
+            text-align: center;
+            margin: 20px 0;
+            padding: 15px;
+            background: #f7fafc;
+            border-radius: 10px;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .tips {
+            background: #f0fff4;
+            border: 1px solid #c6f6d5;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+
+        .tips h3 {
+            color: #22543d;
+            margin-top: 0;
+        }
+
+        .tips ul {
+            color: #2f855a;
+            margin: 10px 0;
+        }
+
+        .tips li {
+            margin: 5px 0;
+        }
+    </style>
 </head>
 <body>
     <div class="container">
-        <h1>Sudoku Solver AI</h1>
-        <div class="upload-box">
-            <input type="file" id="sudokuImage" accept="image/*" capture="camera">
-            <label for="sudokuImage">Choose or Capture Image</label>
-            <div id="previewContainer">
-                <img id="preview" style="display:none;">
-                <div id="placeholder">Preview will appear here</div>
-            </div>
-            <button id="solveBtn">Solve Sudoku</button>
-        </div>
+        <h1>🧩 Sudoku Solver</h1>
         
-        <div class="results" id="results" style="display:none;">
-            <h2>Solution</h2>
-            <div id="solutionGrid"></div>
+        <div class="upload-section">
+            <label for="file-input" class="file-input-wrapper">
+                <input type="file" id="file-input" accept="image/*">
+                📸 Choose Sudoku Image
+            </label>
+            <button id="solve-btn" class="solve-btn" disabled>🔍 Solve Puzzle</button>
+        </div>
+
+        <div id="preview-container" class="preview-container" style="display: none;">
+            <img id="preview-image" class="preview-image" alt="Uploaded image">
+        </div>
+
+        <div class="tips">
+            <h3>📋 Tips for Best Results:</h3>
+            <ul>
+                <li>Use a clear, well-lit image of the Sudoku puzzle</li>
+                <li>Ensure the entire grid is visible and not cut off</li>
+                <li>Avoid shadows and glare on the puzzle</li>
+                <li>Take the photo straight-on (not at an angle)</li>
+                <li>Make sure digits are clearly readable</li>
+                <li>Supported formats: JPG, PNG, WEBP</li>
+            </ul>
+        </div>
+
+        <div id="loading" class="loading" style="display: none;">
+            <div class="spinner"></div>
+            <p>Processing your Sudoku puzzle...</p>
+        </div>
+
+        <div id="error-message" class="error" style="display: none;"></div>
+        <div id="success-message" class="success" style="display: none;"></div>
+        <div id="info-message" class="info" style="display: none;"></div>
+
+        <div id="stats" class="stats" style="display: none;"></div>
+
+        <div id="results" class="results" style="display: none;">
+            <div>
+                <div class="grid-title">📋 Original Puzzle</div>
+                <div id="original-grid" class="sudoku-grid"></div>
+            </div>
+            <div>
+                <div class="grid-title">✅ Solution</div>
+                <div id="solution-grid" class="sudoku-grid"></div>
+            </div>
         </div>
     </div>
-    <script src="/static/script.js"></script>
+
+    <script>
+        const fileInput = document.getElementById('file-input');
+        const solveBtn = document.getElementById('solve-btn');
+        const previewContainer = document.getElementById('preview-container');
+        const previewImage = document.getElementById('preview-image');
+        const loading = document.getElementById('loading');
+        const errorMessage = document.getElementById('error-message');
+        const successMessage = document.getElementById('success-message');
+        const infoMessage = document.getElementById('info-message');
+        const results = document.getElementById('results');
+        const originalGrid = document.getElementById('original-grid');
+        const solutionGrid = document.getElementById('solution-grid');
+        const stats = document.getElementById('stats');
+
+        let selectedFile = null;
+
+        fileInput.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file) {
+                selectedFile = file;
+                solveBtn.disabled = false;
+                
+                // Show preview
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    previewImage.src = e.target.result;
+                    previewContainer.style.display = 'block';
+                };
+                reader.readAsDataURL(file);
+                
+                // Clear previous results
+                clearMessages();
+                results.style.display = 'none';
+                stats.style.display = 'none';
+            }
+        });
+
+        solveBtn.addEventListener('click', function() {
+            if (!selectedFile) return;
+
+            const formData = new FormData();
+            formData.append('file', selectedFile);
+
+            // Show loading
+            loading.style.display = 'block';
+            clearMessages();
+            results.style.display = 'none';
+            stats.style.display = 'none';
+            solveBtn.disabled = true;
+
+            fetch('/solve', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                loading.style.display = 'none';
+                solveBtn.disabled = false;
+
+                if (data.error) {
+                    showError(data.error);
+                    if (data.original) {
+                        // Show the detected board even if solving failed
+                        displayGrids(data.original, null);
+                        results.style.display = 'grid';
+                        
+                        if (data.detected_digits) {
+                            showInfo(`Detected ${data.detected_digits} digits from the image.`);
+                        }
+                    }
+                } else {
+                    showSuccess('Sudoku solved successfully! 🎉');
+                    displayGrids(data.original, data.solution);
+                    results.style.display = 'grid';
+                    
+                    // Show statistics
+                    if (data.detected_digits) {
+                        stats.innerHTML = `
+                            <h3>📊 Statistics</h3>
+                            <p><strong>Digits detected:</strong> ${data.detected_digits}/81</p>
+                            <p><strong>Empty cells filled:</strong> ${81 - data.detected_digits}</p>
+                        `;
+                        stats.style.display = 'block';
+                    }
+                }
+            })
+            .catch(error => {
+                loading.style.display = 'none';
+                solveBtn.disabled = false;
+                showError('Network error: ' + error.message);
+                console.error('Error:', error);
+            });
+        });
+
+        function displayGrids(original, solution) {
+            originalGrid.innerHTML = '';
+            solutionGrid.innerHTML = '';
+
+            for (let i = 0; i < 9; i++) {
+                for (let j = 0; j < 9; j++) {
+                    // Original grid
+                    const originalCell = document.createElement('div');
+                    originalCell.className = 'sudoku-cell';
+                    const originalValue = original[i][j];
+                    
+                    if (originalValue === 0) {
+                        originalCell.className += ' empty';
+                        originalCell.textContent = '';
+                    } else {
+                        originalCell.className += ' original';
+                        originalCell.textContent = originalValue;
+                    }
+                    
+                    originalGrid.appendChild(originalCell);
+
+                    // Solution grid
+                    if (solution) {
+                        const solutionCell = document.createElement('div');
+                        solutionCell.className = 'sudoku-cell';
+                        const solutionValue = solution[i][j];
+                        
+                        if (originalValue === 0) {
+                            solutionCell.className += ' solved';
+                        } else {
+                            solutionCell.className += ' original';
+                        }
+                        
+                        solutionCell.textContent = solutionValue;
+                        solutionGrid.appendChild(solutionCell);
+                    }
+                }
+            }
+
+            // Add 3x3 box borders
+            addBoxBorders(originalGrid);
+            if (solution) {
+                addBoxBorders(solutionGrid);
+            }
+        }
+
+        function addBoxBorders(grid) {
+            const cells = grid.children;
+            for (let i = 0; i < 81; i++) {
+                const row = Math.floor(i / 9);
+                const col = i % 9;
+                
+                // Add thick borders for 3x3 boxes
+                if (row % 3 === 0 && row !== 0) {
+                    cells[i].style.borderTop = '3px solid #2d3748';
+                }
+                if (col % 3 === 0 && col !== 0) {
+                    cells[i].style.borderLeft = '3px solid #2d3748';
+                }
+            }
+        }
+
+        function showError(message) {
+            errorMessage.textContent = message;
+            errorMessage.style.display = 'block';
+            successMessage.style.display = 'none';
+            infoMessage.style.display = 'none';
+        }
+
+        function showSuccess(message) {
+            successMessage.textContent = message;
+            successMessage.style.display = 'block';
+            errorMessage.style.display = 'none';
+            infoMessage.style.display = 'none';
+        }
+
+        function showInfo(message) {
+            infoMessage.textContent = message;
+            infoMessage.style.display = 'block';
+            errorMessage.style.display = 'none';
+            successMessage.style.display = 'none';
+        }
+
+        function clearMessages() {
+            errorMessage.style.display = 'none';
+            successMessage.style.display = 'none';
+            infoMessage.style.display = 'none';
+        }
+
+        // Drag and drop functionality
+        const container = document.querySelector('.container');
+        
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            container.addEventListener(eventName, preventDefaults, false);
+        });
+
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        ['dragenter', 'dragover'].forEach(eventName => {
+            container.addEventListener(eventName, highlight, false);
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            container.addEventListener(eventName, unhighlight, false);
+        });
+
+        function highlight(e) {
+            container.style.background = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+            container.style.opacity = '0.8';
+        }
+
+        function unhighlight(e) {
+            container.style.background = 'white';
+            container.style.opacity = '1';
+        }
+
+        container.addEventListener('drop', handleDrop, false);
+
+        function handleDrop(e) {
+            const dt = e.dataTransfer;
+            const files = dt.files;
+
+            if (files.length > 0) {
+                const file = files[0];
+                if (file.type.startsWith('image/')) {
+                    selectedFile = file;
+                    solveBtn.disabled = false;
+                    
+                    // Show preview
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        previewImage.src = e.target.result;
+                        previewContainer.style.display = 'block';
+                    };
+                    reader.readAsDataURL(file);
+                    
+                    // Clear previous results
+                    clearMessages();
+                    results.style.display = 'none';
+                    stats.style.display = 'none';
+                    
+                    showInfo('Image dropped successfully! Click "Solve Puzzle" to proceed.');
+                } else {
+                    showError('Please drop an image file (JPG, PNG, WEBP).');
+                }
+            }
+        }
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', function(e) {
+            if (e.ctrlKey && e.key === 'Enter' && !solveBtn.disabled) {
+                solveBtn.click();
+            }
+        });
+
+        // Check server health on load
+        fetch('/health')
+            .then(response => response.json())
+            .then(data => {
+                if (!data.model_loaded) {
+                    showError('Model not loaded on server. Please ensure digit_model.h5 is available.');
+                }
+            })
+            .catch(error => {
+                console.warn('Could not check server health:', error);
+            });
+    </script>
 </body>
 </html>
