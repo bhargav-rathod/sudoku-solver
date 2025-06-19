@@ -8,23 +8,60 @@ import os
 app = Flask(__name__)
 model = load_model('digit_model.h5')
 
-# --- Your Original Functions (Minimal Changes) ---
 def preprocess_image(img):
+    # Convert to grayscale and enhance contrast
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (9, 9), 0)
-    thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                  cv2.THRESH_BINARY_INV, 11, 2)
-    return thresh
+    gray = cv2.equalizeHist(gray)
+    
+    # Apply adaptive thresholding with different parameters
+    thresh1 = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                   cv2.THRESH_BINARY_INV, 11, 2)
+    thresh2 = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, 
+                                   cv2.THRESH_BINARY_INV, 15, 3)
+    
+    # Combine both thresholding results
+    combined = cv2.bitwise_or(thresh1, thresh2)
+    
+    # Clean up the image
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3,3))
+    processed = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel, iterations=2)
+    
+    return processed
 
-def find_grid_contour(processed_img):
+def find_grid_contour(processed_img, original_img):
+    # Find all contours
     contours, _ = cv2.findContours(processed_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
     if not contours:
         return None
-    largest_contour = max(contours, key=cv2.contourArea)
-    peri = cv2.arcLength(largest_contour, True)
-    approx = cv2.approxPolyDP(largest_contour, 0.02 * peri, True)
-    if len(approx) == 4 and cv2.contourArea(largest_contour) > 2000:
-        return approx
+    
+    # Sort contours by area and check the top candidates
+    contours = sorted(contours, key=cv2.contourArea, reverse=True)[:5]
+    
+    for contour in contours:
+        # Approximate the contour
+        peri = cv2.arcLength(contour, True)
+        approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
+        
+        # Check if it's quadrilateral
+        if len(approx) == 4:
+            # Additional checks for Sudoku grid
+            area = cv2.contourArea(contour)
+            if area < 10000:  # Minimum area threshold
+                continue
+                
+            # Check convexity
+            if not cv2.isContourConvex(approx):
+                continue
+                
+            # Check aspect ratio (should be roughly square)
+            x, y, w, h = cv2.boundingRect(approx)
+            aspect_ratio = float(w)/h
+            if aspect_ratio < 0.8 or aspect_ratio > 1.2:
+                continue
+                
+            return approx
+    
     return None
 
 def order_points(pts):
@@ -50,26 +87,48 @@ def extract_digits(warped_grid):
     board = np.zeros((9, 9), dtype="int")
     cell_size = warped_grid.shape[0] // 9
     gray_warped = cv2.cvtColor(warped_grid, cv2.COLOR_BGR2GRAY)
-    thresh_warped = cv2.adaptiveThreshold(gray_warped, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                         cv2.THRESH_BINARY_INV, 11, 2)
+    
+    # Try multiple thresholding methods
+    thresh1 = cv2.adaptiveThreshold(gray_warped, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                   cv2.THRESH_BINARY_INV, 11, 2)
+    thresh2 = cv2.adaptiveThreshold(gray_warped, 255, cv2.ADAPTIVE_THRESH_MEAN_C, 
+                                   cv2.THRESH_BINARY_INV, 15, 3)
     
     for i in range(9):
         for j in range(9):
-            cell = thresh_warped[i*cell_size:(i+1)*cell_size, j*cell_size:(j+1)*cell_size]
-            cell = cv2.copyMakeBorder(cell, 8, 8, 8, 8, cv2.BORDER_CONSTANT, value=[0, 0, 0])
-            contours, _ = cv2.findContours(cell, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            if contours:
-                c = max(contours, key=cv2.contourArea)
-                x, y, w, h = cv2.boundingRect(c)
-                if w > 15 and h > 15 and cv2.contourArea(c) > 100:
-                    digit_roi = cell[y:y+h, x:x+w]
-                    digit_img = cv2.resize(digit_roi, (28, 28))
-                    digit_img = digit_img.astype("float") / 255.0
-                    digit_img = np.expand_dims(digit_img, axis=-1)
-                    digit_img = np.expand_dims(digit_img, axis=0)
-                    prediction = model.predict(digit_img, verbose=0)
-                    board[i, j] = np.argmax(prediction)
+            # Try both thresholding results
+            for thresh in [thresh1, thresh2]:
+                cell = thresh[i*cell_size:(i+1)*cell_size, j*cell_size:(j+1)*cell_size]
+                cell = cv2.copyMakeBorder(cell, 8, 8, 8, 8, cv2.BORDER_CONSTANT, value=[0, 0, 0])
+                
+                # Find contours
+                contours, _ = cv2.findContours(cell, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                
+                if contours:
+                    c = max(contours, key=cv2.contourArea)
+                    x, y, w, h = cv2.boundingRect(c)
+                    
+                    # More lenient size requirements
+                    if w > 10 and h > 10 and cv2.contourArea(c) > 50:
+                        digit_roi = cell[y:y+h, x:x+w]
+                        digit_img = cv2.resize(digit_roi, (28, 28))
+                        
+                        # Additional preprocessing for the digit
+                        digit_img = cv2.erode(digit_img, np.ones((2,2), np.uint8), iterations=1)
+                        digit_img = cv2.dilate(digit_img, np.ones((2,2), np.uint8), iterations=1)
+                        
+                        digit_img = digit_img.astype("float") / 255.0
+                        digit_img = np.expand_dims(digit_img, axis=-1)
+                        digit_img = np.expand_dims(digit_img, axis=0)
+                        
+                        prediction = model.predict(digit_img, verbose=0)
+                        confidence = np.max(prediction)
+                        
+                        # Only accept predictions with reasonable confidence
+                        if confidence > 0.7:
+                            board[i, j] = np.argmax(prediction)
+                            break  # Use the first good prediction
+    
     return board
 
 def solve_sudoku(board):
@@ -111,7 +170,6 @@ def solve_sudoku(board):
             board[row][col] = 0
     return False
 
-# --- Flask Routes ---
 @app.route('/')
 def home():
     return render_template('index.html')
@@ -131,13 +189,20 @@ def solve():
         nparr = np.frombuffer(img_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
-        # Process image
+        # Try multiple preprocessing approaches
         processed = preprocess_image(img)
-        grid_contour = find_grid_contour(processed)
+        grid_contour = find_grid_contour(processed, img)
         
         if grid_contour is None:
-            return jsonify({'error': 'No Sudoku grid detected'}), 400
+            # Try alternative approach if first attempt fails
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            blurred = cv2.GaussianBlur(gray, (5,5), 0)
+            edges = cv2.Canny(blurred, 50, 150)
+            grid_contour = find_grid_contour(edges, img)
             
+            if grid_contour is None:
+                return jsonify({'error': 'No Sudoku grid detected. Try a clearer image.'}), 400
+        
         warped, _ = warp_perspective(img, grid_contour)
         board = extract_digits(warped)
         
